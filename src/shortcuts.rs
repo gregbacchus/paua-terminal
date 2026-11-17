@@ -85,7 +85,7 @@ pub const ACTIONS: &[Action] = &[
         "Shift+Insert"
     ),
     action!(Window, "copy_path", "Copy working directory"),
-    action!(Window, "clear", "Clear terminal"),
+    action!(Window, "clear", "Clear terminal", "Ctrl+Shift+K"),
     action!(Window, "scroll_to_bottom", "Scroll to bottom"),
     action!(Window, "git_sync", "Git sync"),
     action!(Window, "git_fetch", "Git fetch"),

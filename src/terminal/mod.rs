@@ -129,6 +129,8 @@ pub struct State {
     scroll_velocity: f32,
     touchpad_swipe: touchpad::Swipe,
     last_tick_us: i64,
+    /// Deadline for discarding history produced by the shell redraw after Clear.
+    clear_redraw_deadline_us: i64,
 
     focused: bool,
     pwd_flag: Rc<Cell<bool>>,
@@ -587,11 +589,14 @@ impl TermView {
         if let Some(st) = self.imp().state.borrow_mut().as_mut() {
             let alt = st.term.active_screen().unwrap_or_default() == libghostty_vt::screen::Screen::Alternate;
             if !alt {
-                st.term.vt_write(b"\x1b[3J\x1b[H\x1b[2J");
+                st.term.vt_write(b"\x1b[H\x1b[2J\x1b[3J");
+                st.clear_redraw_deadline_us = glib::monotonic_time() + 1_000_000;
+                st.find_dirty = true;
                 st.frac = 0.0;
                 st.cancel_scroll_motion();
             }
         }
+        self.queue_draw();
         self.send_bytes(b"\x0c");
     }
 
@@ -932,6 +937,7 @@ impl TermView {
             scroll_velocity: 0.0,
             touchpad_swipe: touchpad::Swipe::default(),
             last_tick_us: 0,
+            clear_redraw_deadline_us: 0,
             focused: false,
             pwd_flag,
             bell_flag,
@@ -1089,6 +1095,14 @@ impl TermView {
                 }
             }
             st.term.vt_write(data);
+            if st.clear_redraw_deadline_us != 0 {
+                if now <= st.clear_redraw_deadline_us
+                    && st.term.active_screen().unwrap_or_default() != libghostty_vt::screen::Screen::Alternate
+                {
+                    st.term.vt_write(b"\x1b[3J");
+                }
+                st.clear_redraw_deadline_us = 0;
+            }
             if st.link.is_some() {
                 st.refresh_link(); // output may have moved or changed what is under the pointer
             }
@@ -1712,6 +1726,22 @@ impl TermView {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn clear_removes_screen_and_scrollback() {
+        let mut term = Terminal::new(TerminalOptions { cols: 40, rows: 5, max_scrollback: scrollback_bytes(100) }).unwrap();
+        for i in 0..20 {
+            term.vt_write(format!("old line {i}\r\n").as_bytes());
+        }
+        assert!(term.scrollbar().unwrap().total > 5);
+        term.vt_write(b"\x1b[H\x1b[2J\x1b[3J");
+        // A shell may scroll while redrawing its prompt after Ctrl+L.
+        term.vt_write(b"\r\n\r\n\r\n\r\n\r\nprompt");
+        assert!(term.scrollbar().unwrap().total > 5);
+        term.vt_write(b"\x1b[3J");
+        assert_eq!(term.scrollbar().unwrap().total, 5);
+        assert!(!search::screen_lines(&term).join("\n").contains("old line"));
+    }
 
     /// Lines of history that survive after printing `n` numbered lines into a `cols`-wide terminal.
     fn history_after(max_scrollback: usize, cols: u16, n: usize) -> usize {

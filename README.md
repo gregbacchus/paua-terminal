@@ -378,7 +378,7 @@ settings portal); if yours doesn't provide one, View -> Cycle Colour Scheme swit
 The title-bar menus: **File** (New Window Ctrl+Shift+N, New Tab Ctrl+Shift+T, Close Tab Ctrl+Shift+W,
 previous / next tab, split right / down, open the tab in a new window, Close Pane,
 open / reload the config, Quit Ctrl+Q), **Edit** (Copy Ctrl+Shift+C,
-Paste Ctrl+Shift+V, copy the working directory, Clear Terminal, Find Ctrl+Shift+F, Command Palette
+Paste Ctrl+Shift+V, copy the working directory, Clear Terminal Ctrl+Shift+K (screen and scrollback), Find Ctrl+Shift+F, Command Palette
 Ctrl+Shift+P), **View** (cycle the colour scheme) and **Help** (Keyboard Shortcuts and About).
 
 Press **F1** or choose **Help → Keyboard Shortcuts** to see the keys currently in effect. Set

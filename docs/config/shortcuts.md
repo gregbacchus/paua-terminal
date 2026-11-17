@@ -52,7 +52,7 @@ shortcuts:
 | `paste` | Paste from the clipboard | Ctrl+Shift+V, Ctrl+Shift+Insert |
 | `paste_primary` | Paste the primary selection | Shift+Insert |
 | `copy_path` | Copy the terminal's working directory | — |
-| `clear` | Clear the terminal | — |
+| `clear` | Clear the terminal screen and scrollback | Ctrl+Shift+K |
 | `scroll_to_bottom` | Return to the newest terminal output | — |
 | `git_sync` | Sync the current repository using the Git widget | — |
 | `git_fetch` | Fetch and prune in the current repository | — |

@@ -4,6 +4,10 @@
 //! HarfBuzz (via Pango) can apply OpenType `liga`/`calt`. Wide glyphs get their own run so the
 //! grid alignment stays exact. Runs are positioned at `col * cell_w`.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
+
 use gtk::{gdk, graphene, gsk, pango, prelude::*};
 use libghostty_vt::{
     RenderState, Terminal,
@@ -317,14 +321,40 @@ fn needs_cairo(text: &str) -> bool {
     text.chars().any(|c| matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '/' | '\\'))
 }
 
-thread_local! {
-    /// Rasterised runs of tall glyphs (see `outline_texture`), by text, font, style, colour, scale.
-    static OUTLINES: std::cell::RefCell<std::collections::HashMap<String, gdk::MemoryTexture>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+const OUTLINE_CACHE_MAX_ENTRIES: usize = 1500;
+const OUTLINE_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// Screen history can contain many distinct runs, and each run's pixel data grows with its
+/// width and device scale. Limit both the number of cached runs and their total pixel memory.
+#[derive(Default)]
+struct OutlineCache {
+    textures: HashMap<Rc<str>, gdk::MemoryTexture>,
+    insertion_order: VecDeque<(Rc<str>, usize)>,
+    bytes: usize,
 }
 
-/// Most cached runs before the cache is emptied (it refills with what is on screen).
-const OUTLINE_CACHE_MAX: usize = 1500;
+impl OutlineCache {
+    /// Insert a cache miss, evicting oldest textures first. Oversized runs are drawn uncached.
+    fn insert(&mut self, key: String, texture: &gdk::MemoryTexture, bytes: usize) {
+        if bytes > OUTLINE_CACHE_MAX_BYTES {
+            return;
+        }
+        while self.bytes + bytes > OUTLINE_CACHE_MAX_BYTES || self.textures.len() >= OUTLINE_CACHE_MAX_ENTRIES {
+            let (oldest, size) = self.insertion_order.pop_front().expect("cache contains textures");
+            self.textures.remove(&oldest);
+            self.bytes -= size;
+        }
+        let key: Rc<str> = key.into();
+        self.textures.insert(key.clone(), texture.clone());
+        self.insertion_order.push_back((key, bytes));
+        self.bytes += bytes;
+    }
+}
+
+thread_local! {
+    /// Rasterised runs of tall glyphs (see `outline_texture`), by text, font, style, colour, scale.
+    static OUTLINES: RefCell<OutlineCache> = RefCell::new(OutlineCache::default());
+}
 
 /// A run of text rasterised with Cairo (the true glyph outlines) into a texture, cached, with
 /// `mx` / `my` logical pixels of margin around the layout's box. Drawing the texture on whole
@@ -342,7 +372,7 @@ fn outline_texture(m: &Metrics, layout: &pango::Layout, color: Rgb, w: i32, h: i
         color.1,
         color.2
     );
-    if let Some(t) = OUTLINES.with(|c| c.borrow().get(&key).cloned()) {
+    if let Some(t) = OUTLINES.with(|c| c.borrow().textures.get(key.as_str()).cloned()) {
         return Some(t);
     }
     let wpx = ((w as f32 + 2.0 * mx) * s).ceil() as i32;
@@ -364,13 +394,7 @@ fn outline_texture(m: &Metrics, layout: &pango::Layout, color: Rgb, w: i32, h: i
     let data = surface.take_data().ok()?;
     let bytes = gtk::glib::Bytes::from(&data[..]);
     let tex = gdk::MemoryTexture::new(wpx, hpx, gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, stride);
-    OUTLINES.with(|c| {
-        let mut c = c.borrow_mut();
-        if c.len() >= OUTLINE_CACHE_MAX {
-            c.clear();
-        }
-        c.insert(key, tex.clone());
-    });
+    OUTLINES.with(|c| c.borrow_mut().insert(key, &tex, bytes.len()));
     Some(tex)
 }
 
@@ -772,6 +796,44 @@ mod tests {
     //!   PAUA_PNG_DIR=/some/dir cargo test render_sample -- --ignored
     use super::*;
     use gtk::{gsk, graphene};
+
+    #[test]
+    #[ignore = "needs a GTK display"]
+    fn outline_cache_bounds_retained_texture_memory() {
+        gtk::init().unwrap();
+        let ctx = gtk::Label::new(None).pango_context();
+        let (fonts, cell_w, cell_h, ascent) =
+            super::super::measure(&ctx, "Monospace 12", Default::default());
+        let m = Metrics {
+            ctx: &ctx,
+            fonts: &fonts,
+            features: None,
+            cell_w,
+            cell_h,
+            ascent,
+            scale: 2.0,
+            hl_match: gdk::RGBA::BLACK,
+            hl_current: gdk::RGBA::BLACK,
+        };
+        let path = "project/build/".repeat(10);
+        let mut textures = Vec::new();
+        let mut rendered_bytes = 0;
+        for line in 0..96 {
+            let layout = make_layout(&m, &format!("{path}{line:02}"), false, false, false, false);
+            let (w, h) = layout.pixel_size();
+            let render = || outline_texture(&m, &layout, Rgb(255, 255, 255), w, h, 4.0, 8.0).unwrap();
+            let texture = render();
+            assert_eq!(texture, render(), "a repeated run should reuse its texture");
+            rendered_bytes += texture.width() as usize * texture.height() as usize * 4;
+            textures.push(texture.downgrade());
+        }
+        let retained_bytes: usize = textures.iter()
+            .filter_map(|texture| texture.upgrade())
+            .map(|texture| texture.width() as usize * texture.height() as usize * 4)
+            .sum();
+        assert!(rendered_bytes > 32 * 1024 * 1024, "test must exceed the cache budget");
+        assert!(retained_bytes <= 32 * 1024 * 1024, "retained {retained_bytes} bytes of outline pixels");
+    }
 
     /// A theme's palette reaches the cells the program draws with ANSI colours, and a later theme
     /// without those entries goes back to the standard palette.
